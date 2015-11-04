@@ -34,6 +34,11 @@ import java.util.Map;
 import java.util.TreeMap;
 
 import org.apache.avro.Schema.Type;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.GnuParser;
+import org.apache.commons.cli.OptionBuilder;
+import org.apache.commons.cli.ParseException;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -42,6 +47,8 @@ import com.cloudera.sqoop.SqoopOptions;
 import com.cloudera.sqoop.util.ImportException;
 import com.cloudera.sqoop.util.ExportException;
 import com.cloudera.sqoop.mapreduce.JdbcUpsertExportJob;
+
+import org.apache.sqoop.cli.RelatedOptions;
 import org.apache.sqoop.mapreduce.mysql.MySQLUpsertOutputFormat;
 import org.apache.sqoop.util.LoggingUtils;
 
@@ -53,14 +60,25 @@ public class MySQLManager
 
   public static final Log LOG = LogFactory.getLog(MySQLManager.class.getName());
 
+  public static final String SCHEMA = "schema";
+  
   // driver class to ensure is loaded when making db connection.
   private static final String DRIVER_CLASS = "com.mysql.jdbc.Driver";
 
   // set to true after we warn the user that we can use direct fastpath.
   private static boolean warningPrinted = false;
 
+  private String schema = null;
+  
   public MySQLManager(final SqoopOptions opts) {
     super(DRIVER_CLASS, opts);
+    
+    // Try to parse extra arguments
+    try {
+      parseExtraArgs(opts.getExtraArgs());
+    } catch (ParseException e) {
+      throw new RuntimeException("Can't parse extra arguments", e);
+    }
   }
 
   @Override
@@ -242,10 +260,12 @@ public class MySQLManager
    * @return how the column name should be rendered in the sql text.
    */
   public String escapeColName(String colName) {
-    if (null == colName) {
-      return null;
-    }
-    return "`" + colName + "`";
+	  return escapeIdentifier(colName);
+  }
+
+  @Override
+  public boolean escapeTableNameOnExport() {
+    return true;
   }
 
   /**
@@ -260,8 +280,18 @@ public class MySQLManager
     if (null == tableName) {
       return null;
     }
-    return "`" + tableName + "`";
+    if (schema != null && !schema.isEmpty()) {
+        return escapeIdentifier(schema) + "." + escapeIdentifier(tableName);
+    }
+    return escapeIdentifier(tableName);
   }
+  
+  protected String escapeIdentifier(String identifier) {
+	    if (identifier == null) {
+	      return null;
+	    }
+	    return "`" + identifier + "`";
+	  }
 
   @Override
   public boolean supportsStagingForExport() {
@@ -395,6 +425,9 @@ public class MySQLManager
 
   @Override
   protected String getSchemaQuery() {
+	    if (schema != null && !schema.isEmpty()) {
+	        return "'" + schema + "'";
+	      }
     return "SELECT SCHEMA()";
   }
 
@@ -431,6 +464,55 @@ public class MySQLManager
   public Type toAvroType(String tableName, String columnName, int sqlType) {
     sqlType = overrideSqlType(tableName, columnName, sqlType);
     return super.toAvroType(tableName, columnName, sqlType);
+  }
+  
+  /**
+   * Parse extra arguments.
+   *
+   * @param args Extra arguments array
+   * @throws ParseException
+   */
+  private void parseExtraArgs(String[] args) throws ParseException {
+    // No-op when no extra arguments are present
+    if (args == null || args.length == 0) {
+      return;
+    }
+
+    // We do not need extended abilities of SqoopParser, so we're using
+    // Gnu parser instead.
+    CommandLineParser parser = new GnuParser();
+    CommandLine cmdLine = parser.parse(getExtraOptions(), args, true);
+
+    // Apply parsed arguments
+    applyExtraArguments(cmdLine);
+  }
+
+  protected void applyExtraArguments(CommandLine cmdLine) {
+    // Apply extra options
+    if (cmdLine.hasOption(SCHEMA)) {
+      String schemaName = cmdLine.getOptionValue(SCHEMA);
+      LOG.info("We will use schema " + schemaName);
+
+      this.schema = schemaName;
+    }
+  }
+
+  /**
+   * Create related options for MySQL extra parameters.
+   *
+   * @return
+   */
+  @SuppressWarnings("static-access")
+  protected RelatedOptions getExtraOptions() {
+    // Connection args (common)
+    RelatedOptions extraOptions =
+      new RelatedOptions("MySQL extra options:");
+
+    extraOptions.addOption(OptionBuilder.withArgName("string").hasArg()
+      .withDescription("Optional schema name")
+      .withLongOpt(SCHEMA).create());
+
+    return extraOptions;
   }
 }
 
